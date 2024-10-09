@@ -17,12 +17,12 @@ def extract_numeric(value):
 # Function to categorize antibiotic susceptibility based on numeric values
 def categorize_susceptibility(value):
     if value >= 16:
-        return "Resistant"
+        return "RESISTANT"
     elif 1 < value < 16:
-        return "Intermediate"
+        return "INTERMEDIATE"
     else:
-        return "Susceptible"
-
+        return "SENSITIVE"
+st.title("Antibiotic Prediction Application")
 # Load Excel file
 uploaded_file = st.file_uploader("Choose an Excel file", type="xlsx")
 
