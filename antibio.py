@@ -3,6 +3,7 @@ import streamlit as st
 import pandas as pd
 from sklearn.model_selection import train_test_split
 from sklearn.ensemble import RandomForestClassifier
+import plotly.express as px
 
 # Function to extract numeric values from antibiotic strings (e.g., "R (>=16)" -> 16)
 def extract_numeric(value):
@@ -10,17 +11,6 @@ def extract_numeric(value):
         match = re.search(r'\d+', value)
         if match:
             return float(match.group())
-    return None
-
-# Function to categorize antibiotic susceptibility based on symbols (R, I, S)
-def categorize_susceptibility(value):
-    if isinstance(value, str):
-        if value.startswith("R"):
-            return "Resistant"
-        elif value.startswith("I"):
-            return "Intermediate"
-        elif value.startswith("S"):
-            return "Susceptible"
     return None
 
 # Cache data loading to prevent reloading on each interaction
@@ -33,9 +23,15 @@ def load_data(file):
     columns_to_load = relevant_columns + antibiotic_columns
     data = pd.read_excel(file, usecols=columns_to_load)
     return data, relevant_columns, antibiotic_columns
+
+# Streamlit layout
+st.set_page_config(layout="wide")
 st.title("Antibiotics Prediction Application")
-# Streamlit interface
-uploaded_file = st.file_uploader("Choose an Excel file", type="xlsx")
+st.image("https://media.istockphoto.com/id/1468430468/photo/medical-technology-doctor-use-ai-robots-for-diagnosis-care-and-increasing-accuracy-patient.jpg?s=612x612&w=0&k=20&c=KqQbjGMVakHNTJOeh3LVeiqwZWF4Kt5j3taoJXY4x80=", use_column_width=True)
+
+# Sidebar for file upload
+st.sidebar.text("Upload Data")
+uploaded_file = st.sidebar.file_uploader("Choose an Excel file", type="xlsx")
 
 if uploaded_file:
     with st.spinner("Analysing data..."):
@@ -49,25 +45,41 @@ if uploaded_file:
         antibiotics_to_keep = [antibiotic for antibiotic in antibiotic_columns if data_cleaned[antibiotic].nunique() > 1]
         data_cleaned = data_cleaned[relevant_columns + antibiotics_to_keep]
 
-        # Apply categorization and numeric extraction
+        # Extract numeric resistance values without converting them to categories
         for antibiotic in antibiotics_to_keep:
-            data_cleaned[f"{antibiotic}_category"] = data_cleaned[antibiotic].apply(categorize_susceptibility)
-            data_cleaned[f"{antibiotic}_value"] = data[antibiotic].apply(extract_numeric)
+            data_cleaned[f"{antibiotic}_value"] = data_cleaned[antibiotic].apply(extract_numeric)
 
-    # Display the first 5 rows of the cleaned dataset
-    st.write("Dataset Preview:")
-    st.dataframe(data_cleaned.head(5))
+    # Display the first 5 rows of the cleaned dataset in an improved table format
+    st.write("### Dataset Preview:")
+    st.dataframe(data_cleaned.head(5), use_container_width=True)
+
+    # Display help note
+    st.info("Please select options from the sidebar and click 'Predict' to get the antibiotics.")
+
+    # Get unique values for dropdown options
+    dept_options = data_cleaned['Dept'].unique()
+    isolate_options = data_cleaned['Isolate'].unique()
+    specimen_options = data_cleaned['Specimen'].unique()
+
+    # Sidebar dropdown fields for Dept, Isolate, Specimen
+    new_dept = st.sidebar.selectbox("Select Department", options=dept_options, key="dept")
+    new_isolate = st.sidebar.selectbox("Select Isolate", options=isolate_options, key="isolate")
+    new_specimen = st.sidebar.selectbox("Select Specimen", options=specimen_options, key="specimen")
 
     # One-hot encode categorical variables like 'Dept', 'Isolate', and 'Specimen'
-    X = data_cleaned[relevant_columns]
-    X_encoded = pd.get_dummies(X, drop_first=True)
+    X_encoded = pd.get_dummies(data_cleaned[relevant_columns], drop_first=True)
 
-    # Train models for each antibiotic based on the category
+    # Train models for each antibiotic based on the numeric resistance values
     models = {}
     for antibiotic in antibiotics_to_keep:
-        y = data_cleaned[f"{antibiotic}_category"]
-        X_filtered = X_encoded[y.notna()]
+        y = data_cleaned[f"{antibiotic}_value"]
+        X_filtered = X_encoded.loc[y.notna()]
         y_filtered = y[y.notna()]
+
+        # Ensure consistent length between X and y
+        if len(X_filtered) != len(y_filtered):
+            st.warning(f"Skipping {antibiotic} due to inconsistent data lengths.")
+            continue
 
         if len(y_filtered) < 2:
             continue
@@ -77,19 +89,10 @@ if uploaded_file:
         model.fit(X_train, y_train)
         models[antibiotic] = model
 
-    # Get unique values for dropdown options
-    dept_options = data_cleaned['Dept'].unique()
-    isolate_options = data_cleaned['Isolate'].unique()
-    specimen_options = data_cleaned['Specimen'].unique()
-
-    # Dropdown fields for Dept, Isolate, Specimen
-    new_dept = st.selectbox("Select Department", options=dept_options, key="dept")
-    new_isolate = st.selectbox("Select Isolate", options=isolate_options, key="isolate")
-    new_specimen = st.selectbox("Select Specimen", options=specimen_options, key="specimen")
-
-    if st.button("Predict"):
-        with st.spinner("Predicting antibiotics..."):
-            if new_dept and new_isolate and new_specimen:
+    # Show the predict button only after the file is uploaded and values are selected
+    if new_dept and new_isolate and new_specimen:
+        if st.sidebar.button("Predict"):
+            with st.spinner("Predicting antibiotics..."):
                 new_data = pd.DataFrame({
                     'Dept': [new_dept],
                     'Isolate': [new_isolate],
@@ -99,19 +102,53 @@ if uploaded_file:
                 # One-hot encode the new input to match the training data format
                 new_data_encoded = pd.get_dummies(new_data).reindex(columns=X_encoded.columns, fill_value=0)
 
-                # Predict resistance for each antibiotic
-                resistant_antibiotics = []
+                # Predict resistance for each antibiotic based on the numeric value threshold
+                threshold = 32  # Define a threshold value for resistance
+                resistant_antibiotics = {}
                 for antibiotic, model in models.items():
                     prediction = model.predict(new_data_encoded)
-                    if prediction[0] == "Resistant":
-                        resistant_antibiotics.append(antibiotic)
+                    if prediction[0] >= threshold:  # Only consider antibiotics above the threshold
+                        resistant_value = prediction[0]
+                        resistant_antibiotics[antibiotic] = resistant_value
 
-                # Display the antibiotics that can be given
-                st.write("Getting the antibiotics...")
+                st.write("##### Predicted Antibiotics:")
                 if resistant_antibiotics:
-                    for antibiotic in resistant_antibiotics:
-                        st.write(f"**- {antibiotic}**")
+                    cols = st.columns(3)  # Creates a grid layout with 3 columns
+                    per_col = len(resistant_antibiotics) // 3 + (len(resistant_antibiotics) % 3 > 0)
+                    
+                    # Distribute antibiotics among columns
+                    for i, antibiotic in enumerate(resistant_antibiotics.keys()):
+                        col = cols[i % 3]
+                        with col:
+                            st.markdown(
+                                f"<ul style='padding-left: 20px; font-family: serif;'><li style='font-size:.9em;'>{antibiotic}</li></ul>", 
+                                unsafe_allow_html=True
+                            )
+
+                    # Plot the line chart with pointers and hover text using Plotly
+                    st.write("### Resistance Values Plot:")
+                    df_plot = pd.DataFrame(list(resistant_antibiotics.items()), columns=['Antibiotic', 'Resistance Value'])
+                    fig = px.line(
+                        df_plot, 
+                        x='Antibiotic', 
+                        y='Resistance Value', 
+                        markers=True,
+                        title='Resistance Values per Antibiotic'
+                    )
+                    fig.update_traces(
+                        mode='lines+markers',
+                        hovertemplate='<b>%{x}</b>: %{y}'
+                    )
+                    fig.update_layout(
+                        xaxis_title='Antibiotic',
+                        yaxis_title='Resistance Value',
+                        xaxis=dict(tickangle=-45),  # Rotate x-axis labels for better readability
+                        showlegend=False
+                    )
+
+                    # Display both antibiotics and plot simultaneously
+                    st.plotly_chart(fig, use_container_width=True)
+                    
+
                 else:
                     st.write("**No suitable antibiotics found based on the input.**")
-            else:
-                st.warning("Please fill all the fields.")
